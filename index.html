@@ -457,7 +457,7 @@
                     <div class="filter-group"><label>Payment Method</label>
                         <select id="rpt-payment" onchange="loadReportData()">
                             <option value="all">All Methods</option><option value="cash">Cash</option>
-                            <option value="card">Card</option><option value="ewallet">E-Wallet</option><option value="gcash">GCash</option>
+                            <option value="card">Card</option><option value="gcash">GCash</option><option value="paymaya">Maya</option>
                         </select>
                     </div>
                 </div>
@@ -564,12 +564,30 @@
                         <div class="form-group"><div class="input-wrap"><i class="fas fa-phone"></i><input type="tel" id="buyer-phone" placeholder="Phone number"></div></div>
                         <h4 class="form-section-title">Payment Method</h4>
                         <div class="payment-grid">
-                            <label class="pay-opt"><input type="radio" name="pay-method" value="cash" checked><div class="pay-card"><i class="fas fa-money-bill-wave"></i><span>Cash</span></div></label>
-                            <label class="pay-opt"><input type="radio" name="pay-method" value="card"><div class="pay-card"><i class="fas fa-credit-card"></i><span>Card</span></div></label>
-                            <label class="pay-opt"><input type="radio" name="pay-method" value="ewallet"><div class="pay-card"><i class="fas fa-wallet"></i><span>E-Wallet</span></div></label>
-                            <label class="pay-opt"><input type="radio" name="pay-method" value="gcash"><div class="pay-card"><i class="fas fa-mobile-alt"></i><span>GCash</span></div></label>
+                            <label class="pay-opt"><input type="radio" name="pay-method" value="cash" checked onchange="onPayMethodChange('cash')"><div class="pay-card"><i class="fas fa-money-bill-wave"></i><span>Cash</span></div></label>
+                            <label class="pay-opt"><input type="radio" name="pay-method" value="card" onchange="onPayMethodChange('card')"><div class="pay-card"><i class="fas fa-credit-card"></i><span>Card</span></div></label>
+                            <label class="pay-opt"><input type="radio" name="pay-method" value="gcash" onchange="onPayMethodChange('gcash')"><div class="pay-card"><i class="fas fa-mobile-alt"></i><span>GCash</span></div></label>
+                            <label class="pay-opt"><input type="radio" name="pay-method" value="paymaya" onchange="onPayMethodChange('paymaya')"><div class="pay-card"><i class="fas fa-wallet"></i><span>Maya</span></div></label>
                         </div>
-                        <div id="cash-change-calc" class="change-calc hidden">
+
+                        <!-- Card fields (PayMongo) -->
+                        <div id="paymongo-card-fields" class="hidden" style="margin-top:.75rem">
+                            <div class="form-group"><div class="input-wrap"><i class="fas fa-credit-card"></i><input type="text" id="card-number" placeholder="Card number" maxlength="19" oninput="formatCardNumber(this)"></div></div>
+                            <div style="display:flex;gap:.5rem">
+                                <div class="form-group" style="flex:1"><div class="input-wrap"><i class="fas fa-calendar"></i><input type="text" id="card-expiry" placeholder="MM / YY" maxlength="7" oninput="formatExpiry(this)"></div></div>
+                                <div class="form-group" style="flex:1"><div class="input-wrap"><i class="fas fa-lock"></i><input type="text" id="card-cvc" placeholder="CVC" maxlength="4"></div></div>
+                            </div>
+                            <div class="form-group"><div class="input-wrap"><i class="fas fa-user"></i><input type="text" id="card-name" placeholder="Name on card"></div></div>
+                        </div>
+
+                        <!-- GCash / Maya redirect notice -->
+                        <div id="paymongo-redirect-notice" class="hidden" style="margin-top:.75rem;padding:.75rem 1rem;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.25);border-radius:8px;font-size:.85rem;color:var(--text-dim)">
+                            <i class="fas fa-info-circle" style="color:var(--violet)"></i>
+                            You will be redirected to complete payment. Come back after finishing.
+                        </div>
+
+                        <!-- Cash: change calculator -->
+                        <div id="cash-change-calc" class="change-calc">
                             <label>Amount Tendered (₱)</label>
                             <div class="input-wrap"><i class="fas fa-coins"></i><input type="number" id="cash-tendered" min="0" step="0.01" placeholder="0.00" oninput="calcChange()"></div>
                             <div class="change-display">Change: <span id="change-amount" class="change-val">₱0.00</span></div>

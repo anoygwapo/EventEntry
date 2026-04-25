@@ -12,11 +12,83 @@ $action = $_GET['action'] ?? '';
 $body   = json_decode(file_get_contents('php://input'), true) ?? [];
 
 match ($action) {
-    'checkout'       => handleCheckout($body, $sess),
-    'list'           => listTransactions(),
-    'validate_coupon'=> validateCoupon($body),
-    default          => jsonResponse(['success' => false, 'error' => 'Unknown action'], 400),
+    'checkout'            => handleCheckout($body, $sess),
+    'paymongo_intent'     => createPaymongoIntent($body),
+    'paymongo_complete'   => completePaymongoCheckout($body, $sess),
+    'list'                => listTransactions(),
+    'validate_coupon'     => validateCoupon($body),
+    default               => jsonResponse(['success' => false, 'error' => 'Unknown action'], 400),
 };
+
+// ── Step 1 (frontend calls this): Create PaymentIntent ──────
+// Returns client_key + payment_intent_id to the frontend.
+// Also returns the public key so the frontend can attach the PaymentMethod.
+function createPaymongoIntent(array $b): void {
+    $amountCentavos = (int)round((float)($b['amount'] ?? 0) * 100);
+    if ($amountCentavos < 2000) { // PayMongo minimum is ₱20.00
+        jsonResponse(['success' => false, 'error' => 'Minimum transaction is ₱20.00'], 422);
+    }
+
+    $pm = $_REQUEST['payment_method_type'] ?? ($b['payment_method_type'] ?? 'card');
+    $allowed = match ($pm) {
+        'gcash'   => ['gcash'],
+        'paymaya' => ['paymaya'],
+        default   => ['card'],
+    };
+
+    $resp = paymongoRequest('POST', '/payment_intents', [
+        'data' => [
+            'attributes' => [
+                'amount'                 => $amountCentavos,
+                'payment_method_allowed' => $allowed,
+                'currency'               => 'PHP',
+                'capture_type'           => 'automatic',
+                'description'            => sanitize($b['description'] ?? 'EventEntry Ticket Purchase'),
+            ],
+        ],
+    ]);
+
+    if (empty($resp['data']['attributes']['client_key'])) {
+        $errMsg = $resp['errors'][0]['detail'] ?? 'PayMongo error';
+        jsonResponse(['success' => false, 'error' => $errMsg], 502);
+    }
+
+    jsonResponse([
+        'success'           => true,
+        'client_key'        => $resp['data']['attributes']['client_key'],
+        'payment_intent_id' => $resp['data']['id'],
+        'public_key'        => PAYMONGO_PUBLIC_KEY,
+    ]);
+}
+
+// ── Step 2 (frontend calls this after PayMongo confirms): Save the sale ──
+// Frontend passes back the payment_intent_id after it has been paid.
+// We verify with PayMongo before saving anything to our DB.
+function completePaymongoCheckout(array $b, array $sess): void {
+    $paymentIntentId = trim($b['payment_intent_id'] ?? '');
+    if (!$paymentIntentId) {
+        jsonResponse(['success' => false, 'error' => 'payment_intent_id required'], 422);
+    }
+
+    // ✅ Verify with PayMongo — never trust the frontend alone
+    $resp = paymongoRequest('GET', '/payment_intents/' . $paymentIntentId);
+    $status = $resp['data']['attributes']['status'] ?? '';
+
+    if ($status !== 'succeeded') {
+        jsonResponse(['success' => false, 'error' => 'Payment not confirmed. Status: ' . $status], 402);
+    }
+
+    // Map PayMongo payment method type back to our DB value
+    $pmType = $resp['data']['attributes']['payment_method_allowed'][0] ?? 'card';
+    $b['payment_method'] = match ($pmType) {
+        'gcash'   => 'gcash',
+        'paymaya' => 'paymaya',
+        default   => 'card',
+    };
+
+    // Now run the normal checkout with the verified payment method
+    handleCheckout($b, $sess);
+}
 
 // ── Checkout ────────────────────────────────────────────────
 function handleCheckout(array $b, array $sess): void {
@@ -28,7 +100,7 @@ function handleCheckout(array $b, array $sess): void {
     }
 
     $eventId     = (int)$b['event_id'];
-    $payMethod   = in_array($b['payment_method'] ?? '', ['cash','card','ewallet','gcash']) ? $b['payment_method'] : 'cash';
+    $payMethod   = in_array($b['payment_method'] ?? '', ['cash','card','ewallet','gcash','paymaya']) ? $b['payment_method'] : 'cash';
     $buyerName   = sanitize($b['buyer_name']  ?? '');
     $buyerEmail  = filter_var($b['buyer_email']  ?? '', FILTER_VALIDATE_EMAIL) ?: null;
     $buyerPhone  = sanitize($b['buyer_phone'] ?? '');

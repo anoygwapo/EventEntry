@@ -36,16 +36,17 @@ const state = {
 /* ── Init ────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
     // Check if already logged in
+    // Handle GCash/Maya redirect return FIRST (before auth check)
+    const paymentCompleted = await handlePayMongoReturn();
+    if (paymentCompleted) {
+        console.log('Payment return handled');
+    }
+
     const r = await API.get('auth.php', { action: 'check' });
     if (r.success) { state.user = r; postLogin(r.role, r.full_name); return; }
     showPage('page-landing');
 
-    // Payment method toggle for cash change calc
-    document.querySelectorAll('input[name="pay-method"]').forEach(el =>
-        el.addEventListener('change', () => {
-            document.getElementById('cash-change-calc').classList.toggle('hidden', el.value !== 'cash');
-        })
-    );
+    // Payment method UI handled by onPayMethodChange()
     // POS clock
     setInterval(() => {
         const el = document.getElementById('pos-clock');
@@ -495,9 +496,11 @@ function openCheckoutModal() {
     const dr = document.getElementById('co-discount-row');
     dr.style.display = disc > 0 ? 'flex' : 'none';
     if (disc > 0) document.getElementById('co-discount').textContent = '-₱' + disc.toLocaleString();
-    ['buyer-name','buyer-email','buyer-phone','cash-tendered'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    ['buyer-name','buyer-email','buyer-phone','cash-tendered','card-number','card-expiry','card-cvc','card-name'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     document.getElementById('change-amount').textContent = '₱0.00';
     document.getElementById('cash-change-calc').classList.remove('hidden');
+    document.getElementById('paymongo-card-fields').classList.add('hidden');
+    document.getElementById('paymongo-redirect-notice').classList.add('hidden');
     document.querySelector('input[name="pay-method"][value="cash"]').checked = true;
     openModal('checkout-modal');
 }
@@ -518,31 +521,265 @@ function calcChange() {
     el.style.color = change >= 0 ? 'var(--emerald)' : 'var(--red)';
 }
 
+/* ── Payment method UI toggle ────────────────────────────────── */
+function onPayMethodChange(method) {
+    const isCard     = method === 'card';
+    const isDigital  = method === 'gcash' || method === 'paymaya';
+    const isCash     = method === 'cash';
+    document.getElementById('cash-change-calc').classList.toggle('hidden', !isCash);
+    document.getElementById('paymongo-card-fields').classList.toggle('hidden', !isCard);
+    document.getElementById('paymongo-redirect-notice').classList.toggle('hidden', !isDigital);
+}
+
+function formatCardNumber(el) {
+    let v = el.value.replace(/\D/g, '').slice(0, 16);
+    el.value = v.replace(/(\d{4})/g, '$1 ').trim();
+}
+function formatExpiry(el) {
+    let v = el.value.replace(/\D/g, '').slice(0, 4);
+    if (v.length >= 3) v = v.slice(0,2) + ' / ' + v.slice(2);
+    el.value = v;
+}
+
+/* ── Checkout (cash path OR PayMongo path) ──────────────────── */
 async function handleCheckout(e) {
     e.preventDefault();
     if (!state.currentEvent) { showToast('No event selected', 'error'); return; }
+
     const payMethod = document.querySelector('input[name="pay-method"]:checked').value;
-    if (payMethod === 'cash') {
-        const sub      = state.cart.reduce((s, c) => s + c.price * c.qty, 0);
-        const tendered = parseFloat(document.getElementById('cash-tendered').value) || 0;
-        if (tendered < sub) { showToast('Cash tendered is insufficient', 'error'); return; }
+    const sub       = state.cart.reduce((s, c) => s + c.price * c.qty, 0);
+    let disc = 0;
+    if (state.appliedCoupon) {
+        disc = state.appliedCoupon.discount_type === 'percent'
+            ? Math.round(sub * state.appliedCoupon.discount_value / 100)
+            : Math.min(parseFloat(state.appliedCoupon.discount_value), sub);
     }
-    const r = await API.post('transactions.php', { action: 'checkout' }, {
-        event_id:       state.currentEvent.id,
-        buyer_name:     document.getElementById('buyer-name').value,
-        buyer_email:    document.getElementById('buyer-email').value,
-        buyer_phone:    document.getElementById('buyer-phone').value,
-        payment_method: payMethod,
-        coupon_code:    state.appliedCoupon?.code || '',
+    const total = sub - disc;
+
+    const commonFields = {
+        event_id:    state.currentEvent.id,
+        buyer_name:  document.getElementById('buyer-name').value,
+        buyer_email: document.getElementById('buyer-email').value,
+        buyer_phone: document.getElementById('buyer-phone').value,
+        coupon_code: state.appliedCoupon?.code || '',
         items: state.cart.map(c => ({ ticket_type_id: c.ticket_type_id, quantity: c.qty })),
+    };
+
+    // ── Cash path ────────────────────────────────────────────
+    if (payMethod === 'cash') {
+        const tendered = parseFloat(document.getElementById('cash-tendered').value) || 0;
+        if (tendered < total) { showToast('Cash tendered is insufficient', 'error'); return; }
+        const r = await API.post('transactions.php', { action: 'checkout' }, { ...commonFields, payment_method: 'cash' });
+        if (!r.success) { showToast(r.error || 'Checkout failed', 'error'); return; }
+        finishCheckout(r);
+        return;
+    }
+
+    // ── Card path (PayMongo) ─────────────────────────────────
+    if (payMethod === 'card') {
+        const cardNum  = document.getElementById('card-number').value.replace(/\s/g, '');
+        const expiry   = document.getElementById('card-expiry').value.replace(/\s/g, '').replace('/', '');
+        const cvc      = document.getElementById('card-cvc').value.trim();
+        const cardName = document.getElementById('card-name').value.trim();
+        const email    = document.getElementById('buyer-email').value.trim();
+
+        if (cardNum.length < 15 || expiry.length < 4 || cvc.length < 3 || !cardName) {
+            showToast('Please fill in all card details', 'error'); return;
+        }
+
+        const btn = document.querySelector('.checkout-btn');
+        btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+
+        try {
+            // Step 1: Create PaymentIntent on our backend
+            const intentR = await API.post('transactions.php', { action: 'paymongo_intent' }, {
+                amount: total, payment_method_type: 'card',
+                description: `${state.currentEvent.name} — ${commonFields.buyer_name || 'Walk-in'}`,
+            });
+            if (!intentR.success) { showToast(intentR.error || 'Payment init failed', 'error'); return; }
+
+            const { client_key, payment_intent_id, public_key } = intentR;
+            const expMonth = parseInt(expiry.slice(0,2));
+            const expYear  = parseInt('20' + expiry.slice(2,4));
+
+            // Step 2: Create PaymentMethod (card) — uses PUBLIC key
+            const pmRes = await fetch('https://api.paymongo.com/v1/payment_methods', {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Basic ' + btoa(public_key + ':'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ data: { attributes: {
+                    type: 'card',
+                    details: { card_number: cardNum, exp_month: expMonth, exp_year: expYear, cvc },
+                    billing: { name: cardName, email: email || undefined },
+                }}}),
+            });
+            const pmData = await pmRes.json();
+            if (pmData.errors) { showToast(pmData.errors[0]?.detail || 'Card error', 'error'); return; }
+            const paymentMethodId = pmData.data.id;
+
+            // Step 3: Attach PaymentMethod to Intent — uses PUBLIC key
+            const attachRes = await fetch(`https://api.paymongo.com/v1/payment_intents/${payment_intent_id}/attach`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Basic ' + btoa(public_key + ':'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ data: { attributes: { payment_method: paymentMethodId, client_key } } }),
+            });
+            const attachData = await attachRes.json();
+            const piStatus   = attachData.data?.attributes?.status;
+
+            if (piStatus === 'awaiting_next_action') {
+                // 3D Secure — open in popup then poll for result
+                const redirectUrl = attachData.data.attributes.next_action.redirect.url;
+                const popup = window.open(redirectUrl, '3ds', 'width=500,height=700');
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Waiting for 3DS...';
+                await poll3DS(popup, payment_intent_id, public_key);
+            } else if (piStatus !== 'succeeded') {
+                showToast('Card declined. Please try another card.', 'error');
+                return;
+            }
+
+            // Step 4: Our backend verifies + saves the transaction
+            const r = await API.post('transactions.php', { action: 'paymongo_complete' }, {
+                ...commonFields, payment_intent_id, payment_method: 'card',
+            });
+            if (!r.success) { showToast(r.error || 'Checkout failed', 'error'); return; }
+            finishCheckout(r);
+
+        } catch (err) {
+            showToast('Payment error: ' + err.message, 'error');
+        } finally {
+            btn.disabled = false; btn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Sale';
+        }
+        return;
+    }
+
+    // ── GCash / Maya path (PayMongo redirect) ────────────────
+    if (payMethod === 'gcash' || payMethod === 'paymaya') {
+        const btn = document.querySelector('.checkout-btn');
+        btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Redirecting...';
+
+        try {
+            // Step 1: Create PaymentIntent
+            const intentR = await API.post('transactions.php', { action: 'paymongo_intent' }, {
+                amount: total, payment_method_type: payMethod,
+                description: `${state.currentEvent.name} — ${commonFields.buyer_name || 'Walk-in'}`,
+            });
+            if (!intentR.success) { showToast(intentR.error || 'Payment init failed', 'error'); return; }
+
+            const { client_key, payment_intent_id, public_key } = intentR;
+            const returnUrl = location.origin + location.pathname + '?paymongo_result=1&pi=' + payment_intent_id;
+
+            // Step 2: Create PaymentMethod (gcash / paymaya)
+            const pmRes = await fetch('https://api.paymongo.com/v1/payment_methods', {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Basic ' + btoa(public_key + ':'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ data: { attributes: {
+                    type: payMethod,
+                    billing: { name: commonFields.buyer_name || 'Walk-in', email: commonFields.buyer_email || undefined },
+                }}}),
+            });
+            const pmData = await pmRes.json();
+            if (pmData.errors) { showToast(pmData.errors[0]?.detail || 'Payment method error', 'error'); return; }
+
+            // Step 3: Attach to Intent
+            const attachRes = await fetch(`https://api.paymongo.com/v1/payment_intents/${payment_intent_id}/attach`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Basic ' + btoa(public_key + ':'),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ data: { attributes: {
+                    payment_method: pmData.data.id, client_key, return_url: returnUrl,
+                }}}),
+            });
+            const attachData = await attachRes.json();
+            const redirectUrl = attachData.data?.attributes?.next_action?.redirect?.url;
+
+            // Save pending cart data to sessionStorage so we can complete after redirect
+            localStorage.setItem('pending_checkout', JSON.stringify({
+                ...commonFields, payment_method: payMethod, payment_intent_id,
+            }));
+
+            if (redirectUrl) window.location.href = redirectUrl;
+            else showToast('Could not get redirect URL from PayMongo', 'error');
+
+        } catch (err) {
+            showToast('Payment error: ' + err.message, 'error');
+            btn.disabled = false; btn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Sale';
+        }
+        return;
+    }
+}
+
+/* ── Poll for 3DS completion ────────────────────────────────── */
+async function poll3DS(popup, paymentIntentId, publicKey) {
+    return new Promise(resolve => {
+        const interval = setInterval(async () => {
+            if (popup.closed) {
+                clearInterval(interval);
+                resolve();
+            }
+            try {
+                const res  = await fetch(`https://api.paymongo.com/v1/payment_intents/${paymentIntentId}`, {
+                    headers: { 'Authorization': 'Basic ' + btoa(publicKey + ':') },
+                });
+                const data = await res.json();
+                if (data.data?.attributes?.status === 'succeeded') {
+                    clearInterval(interval);
+                    popup.close();
+                    resolve();
+                }
+            } catch {}
+        }, 2000);
     });
-    if (!r.success) { showToast(r.error || 'Checkout failed', 'error'); return; }
+}
+async function handlePayMongoReturn() {
+    const urlParams = new URLSearchParams(location.search);
+    const intentId = urlParams.get('pi');
+    const isReturn = urlParams.get('paymongo_result');
+
+    if (!intentId || !isReturn) return false;
+
+    history.replaceState({}, '', location.pathname);
+    showToast('Verifying payment...', 'info');
+
+    // Retrieve the saved cart data from before the redirect
+   // ✅ NEW
+const pending = JSON.parse(localStorage.getItem('pending_checkout') || '{}');
+localStorage.removeItem('pending_checkout');
+console.log('Pending checkout data:', pending);
+    // Merge payment_intent_id WITH the full cart payload
+    const status = await API.post('transactions.php', { action: 'paymongo_complete' }, {
+        ...pending,
+        payment_intent_id: intentId,
+    });
+
+    if (status.success) {
+        showToast('Payment successful!', 'success');
+        finishCheckout(status);
+        return true;
+    } else {
+        showToast('Payment verification failed: ' + (status.error || 'Unknown error'), 'error');
+        return false;
+    }
+}
+
+/* ── Shared post-checkout finish ────────────────────────────── */
+function finishCheckout(r) {
+    window._lastCheckoutTickets = r.tickets;
     closeModal('checkout-modal');
     showReceipt(r);
     state.cart = []; state.appliedCoupon = null;
     renderCart();
     addActivity('sale', `Sold ${r.tickets.length} ticket(s) to ${r.buyer_name}`, '₱' + parseFloat(r.total_amount).toLocaleString());
-    if (state.role === 'admin') { renderDashboardStats(); renderTicketTypesList(); renderRecentTransactions(); await loadPOSTickets(); }
+    if (state.role === 'admin') { renderDashboardStats(); renderTicketTypesList(); renderRecentTransactions(); loadPOSTickets(); }
     else initStaffDashboard();
 }
 
@@ -590,7 +827,56 @@ function showReceipt(r) {
     openModal('receipt-modal');
 }
 function closeReceiptAndReset() { closeModal('receipt-modal'); }
-function printReceipt() { window.print(); }
+function printReceipt() {
+    const tickets = window._lastCheckoutTickets;
+    if (!tickets || !tickets.length) { alert('No tickets to print.'); return; }
+
+    const ev = state.currentEvent;
+    const buyerName = document.querySelector('.receipt-buyer-info strong')?.textContent || '';
+
+    // Remove old frame
+    const old = document.getElementById('qr-print-frame');
+    if (old) old.remove();
+
+    // Build print frame
+    const frame = document.createElement('div');
+    frame.id = 'qr-print-frame';
+
+    let cards = '';
+    tickets.forEach(t => {
+        cards += `<div class="qr-print-card">
+            <div class="qp-event">${ev?.name || ''}</div>
+            <div class="qp-type">${t.type_name}</div>
+            <div class="qp-buyer">${buyerName}</div>
+            <div class="qp-qr" id="pqr-${t.ticket_code}"></div>
+            <div class="qp-code">${t.ticket_code}</div>
+            <div class="qp-note">Show at entrance &middot; One-time use only</div>
+        </div>`;
+    });
+
+    frame.innerHTML = `<div class="qr-print-page"><div class="qr-cards-wrap">${cards}</div></div>`;
+    document.body.appendChild(frame);
+
+    // Generate QR into each card
+    tickets.forEach(t => {
+        const el = document.getElementById('pqr-' + t.ticket_code);
+        if (el) {
+            try {
+                new QRCode(el, { text: t.ticket_code, width: 160, height: 160, colorDark: '#000', colorLight: '#fff' });
+            } catch(e) { el.textContent = t.ticket_code; }
+        }
+    });
+
+    // Wait for QR to render, then print
+    setTimeout(() => {
+        document.body.classList.add('printing-qr');
+        window.print();
+        setTimeout(() => {
+            document.body.classList.remove('printing-qr');
+            frame.remove();
+        }, 1500);
+    }, 700);
+}
 
 /* ── Scanner ─────────────────────────────────────────────────── */
 async function showScanner() {
