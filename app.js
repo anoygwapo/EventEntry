@@ -1,9 +1,4 @@
-/* =============================================================
-   EVENTENTRY POS SYSTEM — Frontend Application
-   All data operations call PHP API endpoints backed by MySQL
-   =============================================================*/
 
-/* ── API helper ─────────────────────────────────────────────── */
 const API = {
     async call(endpoint, params = {}, body = null) {
         const url = new URL(`api/${endpoint}`, location.href);
@@ -35,18 +30,18 @@ const state = {
 
 /* ── Init ────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
-    // Check if already logged in
-    // Handle GCash/Maya redirect return FIRST (before auth check)
+    // Handle GCash/Maya redirect return FIRST (before normal auth flow)
     const paymentCompleted = await handlePayMongoReturn();
     if (paymentCompleted) {
-        console.log('Payment return handled');
+        console.log('Payment return handled — skipping normal auth flow');
+        return;
     }
 
+    // Normal auth check
     const r = await API.get('auth.php', { action: 'check' });
     if (r.success) { state.user = r; postLogin(r.role, r.full_name); return; }
     showPage('page-landing');
 
-    // Payment method UI handled by onPayMethodChange()
     // POS clock
     setInterval(() => {
         const el = document.getElementById('pos-clock');
@@ -541,7 +536,7 @@ function formatExpiry(el) {
     el.value = v;
 }
 
-/* ── Checkout (cash path OR PayMongo path) ──────────────────── */
+/* ── Checkout handler ────────────────────────────────────────── */
 async function handleCheckout(e) {
     e.preventDefault();
     if (!state.currentEvent) { showToast('No event selected', 'error'); return; }
@@ -565,7 +560,7 @@ async function handleCheckout(e) {
         items: state.cart.map(c => ({ ticket_type_id: c.ticket_type_id, quantity: c.qty })),
     };
 
-    // ── Cash path ────────────────────────────────────────────
+    /* ── Cash path ────────────────────────────────────────────── */
     if (payMethod === 'cash') {
         const tendered = parseFloat(document.getElementById('cash-tendered').value) || 0;
         if (tendered < total) { showToast('Cash tendered is insufficient', 'error'); return; }
@@ -575,7 +570,7 @@ async function handleCheckout(e) {
         return;
     }
 
-    // ── Card path (PayMongo) ─────────────────────────────────
+    /* ── Card path (PayMongo) ─────────────────────────────────── */
     if (payMethod === 'card') {
         const cardNum  = document.getElementById('card-number').value.replace(/\s/g, '');
         const expiry   = document.getElementById('card-expiry').value.replace(/\s/g, '').replace('/', '');
@@ -591,7 +586,6 @@ async function handleCheckout(e) {
         btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
 
         try {
-            // Step 1: Create PaymentIntent on our backend
             const intentR = await API.post('transactions.php', { action: 'paymongo_intent' }, {
                 amount: total, payment_method_type: 'card',
                 description: `${state.currentEvent.name} — ${commonFields.buyer_name || 'Walk-in'}`,
@@ -602,7 +596,6 @@ async function handleCheckout(e) {
             const expMonth = parseInt(expiry.slice(0,2));
             const expYear  = parseInt('20' + expiry.slice(2,4));
 
-            // Step 2: Create PaymentMethod (card) — uses PUBLIC key
             const pmRes = await fetch('https://api.paymongo.com/v1/payment_methods', {
                 method: 'POST',
                 headers: {
@@ -619,7 +612,6 @@ async function handleCheckout(e) {
             if (pmData.errors) { showToast(pmData.errors[0]?.detail || 'Card error', 'error'); return; }
             const paymentMethodId = pmData.data.id;
 
-            // Step 3: Attach PaymentMethod to Intent — uses PUBLIC key
             const attachRes = await fetch(`https://api.paymongo.com/v1/payment_intents/${payment_intent_id}/attach`, {
                 method: 'POST',
                 headers: {
@@ -632,7 +624,6 @@ async function handleCheckout(e) {
             const piStatus   = attachData.data?.attributes?.status;
 
             if (piStatus === 'awaiting_next_action') {
-                // 3D Secure — open in popup then poll for result
                 const redirectUrl = attachData.data.attributes.next_action.redirect.url;
                 const popup = window.open(redirectUrl, '3ds', 'width=500,height=700');
                 btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Waiting for 3DS...';
@@ -642,7 +633,6 @@ async function handleCheckout(e) {
                 return;
             }
 
-            // Step 4: Our backend verifies + saves the transaction
             const r = await API.post('transactions.php', { action: 'paymongo_complete' }, {
                 ...commonFields, payment_intent_id, payment_method: 'card',
             });
@@ -657,13 +647,12 @@ async function handleCheckout(e) {
         return;
     }
 
-    // ── GCash / Maya path (PayMongo redirect) ────────────────
+    /* ── GCash / Maya path (PayMongo redirect) ────────────────── */
     if (payMethod === 'gcash' || payMethod === 'paymaya') {
         const btn = document.querySelector('.checkout-btn');
         btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Redirecting...';
 
         try {
-            // Step 1: Create PaymentIntent
             const intentR = await API.post('transactions.php', { action: 'paymongo_intent' }, {
                 amount: total, payment_method_type: payMethod,
                 description: `${state.currentEvent.name} — ${commonFields.buyer_name || 'Walk-in'}`,
@@ -673,7 +662,6 @@ async function handleCheckout(e) {
             const { client_key, payment_intent_id, public_key } = intentR;
             const returnUrl = location.origin + location.pathname + '?paymongo_result=1&pi=' + payment_intent_id;
 
-            // Step 2: Create PaymentMethod (gcash / paymaya)
             const pmRes = await fetch('https://api.paymongo.com/v1/payment_methods', {
                 method: 'POST',
                 headers: {
@@ -688,7 +676,6 @@ async function handleCheckout(e) {
             const pmData = await pmRes.json();
             if (pmData.errors) { showToast(pmData.errors[0]?.detail || 'Payment method error', 'error'); return; }
 
-            // Step 3: Attach to Intent
             const attachRes = await fetch(`https://api.paymongo.com/v1/payment_intents/${payment_intent_id}/attach`, {
                 method: 'POST',
                 headers: {
@@ -702,17 +689,25 @@ async function handleCheckout(e) {
             const attachData = await attachRes.json();
             const redirectUrl = attachData.data?.attributes?.next_action?.redirect?.url;
 
-            // Save pending cart data to sessionStorage so we can complete after redirect
+            // Save full cart payload to localStorage before redirect
             localStorage.setItem('pending_checkout', JSON.stringify({
-                ...commonFields, payment_method: payMethod, payment_intent_id,
+                ...commonFields,
+                payment_method: payMethod,
+                payment_intent_id,
             }));
 
-            if (redirectUrl) window.location.href = redirectUrl;
-            else showToast('Could not get redirect URL from PayMongo', 'error');
+            if (redirectUrl) {
+                window.location.href = redirectUrl;
+            } else {
+                showToast('Could not get redirect URL from PayMongo', 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Sale';
+            }
 
         } catch (err) {
             showToast('Payment error: ' + err.message, 'error');
-            btn.disabled = false; btn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Sale';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Sale';
         }
         return;
     }
@@ -740,22 +735,67 @@ async function poll3DS(popup, paymentIntentId, publicKey) {
         }, 2000);
     });
 }
+
+/* ── Handle PayMongo redirect return ───────────────────────── */
 async function handlePayMongoReturn() {
     const urlParams = new URLSearchParams(location.search);
-    const intentId = urlParams.get('pi');
-    const isReturn = urlParams.get('paymongo_result');
+    const intentId  = urlParams.get('pi');
+    const isReturn  = urlParams.get('paymongo_result');
 
     if (!intentId || !isReturn) return false;
 
+    // Clean URL immediately so refresh doesn't re-trigger this
     history.replaceState({}, '', location.pathname);
+
+    // Retrieve saved cart payload from before the redirect
+    const pending = JSON.parse(localStorage.getItem('pending_checkout') || '{}');
+    localStorage.removeItem('pending_checkout');
+    console.log('Pending checkout data:', pending);
+
+    // Re-authenticate (session may have survived the redirect, or may not)
+    const authR = await API.get('auth.php', { action: 'check' });
+    if (!authR.success) {
+        // Session expired — show landing and let user log back in
+        showPage('page-landing');
+        showToast('Session expired. Please log in again to view your receipt.', 'error');
+        return false;
+    }
+
+    state.user = authR;
+    state.role = authR.role;
+
+    // Load events so state.currentEvent is available for the receipt
+    await loadEvents();
+
+    // Restore currentEvent from the saved pending data
+    if (pending.event_id && state.events.length) {
+        state.currentEvent = state.events.find(e => e.id == pending.event_id) || state.events[0];
+    } else if (state.events.length) {
+        state.currentEvent = state.events[0];
+    }
+
+    // Navigate to the correct page BEFORE showing the receipt modal
+    // so the modal renders on top of the right page, not the landing page
+    if (state.role === 'admin') {
+        document.getElementById('admin-name').textContent = authR.full_name || 'Admin';
+        showPage('page-admin');
+        showAdminSection('dashboard');
+        setAdminNav('nav-pos');
+        // Also set up the POS page so "pos-staff-name" exists
+        const posName = document.getElementById('pos-staff-name');
+        if (posName) posName.textContent = authR.full_name || 'Staff';
+    } else {
+        document.getElementById('staff-name').textContent = authR.full_name || 'Staff';
+        showPage('page-staff');
+    }
+
+    // Navigate to POS page — cleanest place to show the receipt
+    showPage('page-pos');
+    const posName = document.getElementById('pos-staff-name');
+    if (posName) posName.textContent = authR.full_name || 'Staff';
+
     showToast('Verifying payment...', 'info');
 
-    // Retrieve the saved cart data from before the redirect
-   // ✅ NEW
-const pending = JSON.parse(localStorage.getItem('pending_checkout') || '{}');
-localStorage.removeItem('pending_checkout');
-console.log('Pending checkout data:', pending);
-    // Merge payment_intent_id WITH the full cart payload
     const status = await API.post('transactions.php', { action: 'paymongo_complete' }, {
         ...pending,
         payment_intent_id: intentId,
@@ -767,6 +807,14 @@ console.log('Pending checkout data:', pending);
         return true;
     } else {
         showToast('Payment verification failed: ' + (status.error || 'Unknown error'), 'error');
+        // Fall back to appropriate dashboard
+        if (state.role === 'admin') {
+            showPage('page-admin');
+            initAdminDashboard();
+        } else {
+            showPage('page-staff');
+            initStaffDashboard();
+        }
         return false;
     }
 }
@@ -826,56 +874,90 @@ function showReceipt(r) {
     });
     openModal('receipt-modal');
 }
+
 function closeReceiptAndReset() { closeModal('receipt-modal'); }
+
+/* ── Print Receipt — Professional QR ticket cards ──────────── */
 function printReceipt() {
     const tickets = window._lastCheckoutTickets;
     if (!tickets || !tickets.length) { alert('No tickets to print.'); return; }
 
-    const ev = state.currentEvent;
-    const buyerName = document.querySelector('.receipt-buyer-info strong')?.textContent || '';
+    const ev        = state.currentEvent;
+    const buyerName = document.querySelector('.receipt-buyer-info strong')?.textContent || 'Guest';
+    const now       = new Date().toLocaleString();
 
-    // Remove old frame
+    // Remove any stale frame from previous print
     const old = document.getElementById('qr-print-frame');
     if (old) old.remove();
 
-    // Build print frame
     const frame = document.createElement('div');
     frame.id = 'qr-print-frame';
 
-    let cards = '';
-    tickets.forEach(t => {
-        cards += `<div class="qr-print-card">
-            <div class="qp-event">${ev?.name || ''}</div>
-            <div class="qp-type">${t.type_name}</div>
-            <div class="qp-buyer">${buyerName}</div>
-            <div class="qp-qr" id="pqr-${t.ticket_code}"></div>
-            <div class="qp-code">${t.ticket_code}</div>
-            <div class="qp-note">Show at entrance &middot; One-time use only</div>
-        </div>`;
-    });
+    // Build a card for each ticket
+    const cards = tickets.map(t => `
+        <div class="qr-print-card">
+            <div class="qp-accent" style="background:${t.type_color || '#8b5cf6'}"></div>
+            <div class="qp-body">
+                <div class="qp-event">${ev?.name || 'Event'}</div>
+                <div class="qp-type">${t.type_name}</div>
+                <div class="qp-buyer">${buyerName}</div>
+                <hr class="qp-divider">
+                <div class="qp-qr" id="pqr-${t.id}"></div>
+                <div class="qp-code">${t.ticket_code}</div>
+                <div class="qp-note">Present at entrance &bull; One-time use only</div>
+            </div>
+        </div>`).join('');
 
-    frame.innerHTML = `<div class="qr-print-page"><div class="qr-cards-wrap">${cards}</div></div>`;
+    frame.innerHTML = `
+        <div class="qr-print-page">
+            <div class="qr-print-header">
+                <div class="org-name">EventEntry POS</div>
+                <div class="event-name">${ev?.name || 'Event Tickets'}</div>
+                <div class="print-meta">
+                    Issued: ${now}
+                    &nbsp;&bull;&nbsp;
+                    ${tickets.length} ticket${tickets.length !== 1 ? 's' : ''}
+                    &nbsp;&bull;&nbsp;
+                    Buyer: ${buyerName}
+                </div>
+            </div>
+            <div class="qr-cards-wrap">${cards}</div>
+            <div class="qr-print-footer">
+                Generated by EventEntry &bull; Each QR code is unique and valid for single entry only
+            </div>
+        </div>`;
+
     document.body.appendChild(frame);
 
-    // Generate QR into each card
+    // Render a QR code into each card
     tickets.forEach(t => {
-        const el = document.getElementById('pqr-' + t.ticket_code);
-        if (el) {
-            try {
-                new QRCode(el, { text: t.ticket_code, width: 160, height: 160, colorDark: '#000', colorLight: '#fff' });
-            } catch(e) { el.textContent = t.ticket_code; }
+        const el = document.getElementById('pqr-' + t.id);
+        if (!el) return;
+        try {
+            new QRCode(el, {
+                text: t.ticket_code,
+                width: 150,
+                height: 150,
+                colorDark:  '#000000',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.M,
+            });
+        } catch (err) {
+            // Fallback: show code as text if QRCode lib fails
+            el.style.cssText = 'text-align:center;font-family:monospace;font-size:10px;padding:8px;word-break:break-all';
+            el.textContent = t.ticket_code;
         }
     });
 
-    // Wait for QR to render, then print
+    // Give QR library ~800ms to render canvases, then print
     setTimeout(() => {
-        document.body.classList.add('printing-qr');
         window.print();
+        // Clean up the frame after the print dialog closes (~2s grace)
         setTimeout(() => {
-            document.body.classList.remove('printing-qr');
-            frame.remove();
-        }, 1500);
-    }, 700);
+            const f = document.getElementById('qr-print-frame');
+            if (f) f.remove();
+        }, 2000);
+    }, 800);
 }
 
 /* ── Scanner ─────────────────────────────────────────────────── */
@@ -1311,7 +1393,6 @@ async function loadCheckinList() {
     }).join('');
 }
 
-// Check in a single ticket from the table button
 async function checkInTicket(code, btnEl) {
     if (!state.currentEvent) return;
     btnEl.disabled = true;
@@ -1325,7 +1406,7 @@ async function checkInTicket(code, btnEl) {
         showToast('✅ ' + r.message, 'success');
         addActivity('scan', r.message, code);
         loadCheckinStats();
-        loadCheckinList(); // refresh table
+        loadCheckinList();
     } else {
         if (r.result === 'already_used') {
             showToast('⚠️ Already checked in', 'warning');
@@ -1337,7 +1418,6 @@ async function checkInTicket(code, btnEl) {
     }
 }
 
-// Undo check-in button
 async function undoCheckin(ticketId, btnEl) {
     if (!confirm('Undo this check-in? The ticket will be set back to Pending.')) return;
     btnEl.disabled = true;
@@ -1352,7 +1432,6 @@ async function undoCheckin(ticketId, btnEl) {
     }
 }
 
-// Manual check-in by typing code into the form
 async function manualCheckinByCode(e) {
     e.preventDefault();
     const code = document.getElementById('checkin-code-input').value.trim().toUpperCase();

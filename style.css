@@ -612,11 +612,6 @@ tr:hover td{background:rgba(255,255,255,0.02)}
     .features-strip{display:none}
     .filter-row{flex-direction:column}
 }
-@media print{
-    .sidebar,.top-bar,.top-bar,.btn,.modal-overlay{display:none!important}
-    .main-content{margin-left:0}
-    body{background:#fff;color:#000}
-}
 
 /* ===================== CHECK-IN SECTION ===================== */
 .checkin-stats-row {
@@ -651,54 +646,207 @@ tr:hover td{background:rgba(255,255,255,0.02)}
 .checkin-btn:disabled { opacity: .4; pointer-events: none; }
 .already-checked { color: var(--emerald); font-size: .8rem; font-weight: 600; display: flex; align-items: center; gap: .3rem; }
 .checkin-time { font-size: .72rem; color: var(--text-dim); display: block; margin-top: .2rem; }
-/* ═══════════════════════════════════════════════════
-   QR TICKET PRINT — Chrome compatible
-   Uses body.printing-qr class to isolate print area
-════════════════════════════════════════════════════ */
+
+/* =====================================================================
+   QR TICKET PRINT — Professional, Chrome-reliable isolated print area
+   ===================================================================== */
+
+/* Hidden at all times in normal view */
 #qr-print-frame {
     display: none;
 }
+
+/* Print card styles — used inside the frame */
 .qr-print-page {
-    padding: 24px;
+    padding: 32px;
     background: #fff;
+    font-family: Arial, Helvetica, sans-serif;
 }
+
+.qr-print-header {
+    text-align: center;
+    border-bottom: 2px solid #222;
+    padding-bottom: 16px;
+    margin-bottom: 28px;
+}
+
+.qr-print-header .org-name {
+    font-size: 10px;
+    color: #999;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.qr-print-header .event-name {
+    font-size: 24px;
+    font-weight: 700;
+    color: #111;
+    margin-bottom: 4px;
+    font-family: Arial, Helvetica, sans-serif;
+    letter-spacing: -0.5px;
+}
+
+.qr-print-header .print-meta {
+    font-size: 10px;
+    color: #aaa;
+    font-family: Arial, Helvetica, sans-serif;
+    letter-spacing: 0.3px;
+}
+
 .qr-cards-wrap {
     display: flex;
     flex-wrap: wrap;
     gap: 20px;
-    justify-content: center;
+    justify-content: flex-start;
 }
-.qr-print-card {
-    border: 2px dashed #444;
-    border-radius: 12px;
-    padding: 16px;
-    width: 200px;
-    text-align: center;
-    background: #fff;
-}
-.qp-event  { font-size: 10px; color: #999; font-family: Arial, sans-serif; margin-bottom: 3px; }
-.qp-type   { font-size: 15px; font-weight: bold; font-family: Arial, sans-serif; margin-bottom: 3px; }
-.qp-buyer  { font-size: 11px; color: #555; font-family: Arial, sans-serif; margin-bottom: 10px; }
-.qp-qr     { display: flex; justify-content: center; margin-bottom: 8px; }
-.qp-code   { font-family: 'Courier New', monospace; font-size: 10px; letter-spacing: 1px; color: #333; word-break: break-all; }
-.qp-note   { font-size: 9px; color: #bbb; margin-top: 6px; font-family: Arial, sans-serif; }
 
-/* ── When printing-qr class is active: hide everything, show only frame ── */
+.qr-print-card {
+    border: 1.5px solid #ddd;
+    border-radius: 10px;
+    width: 210px;
+    overflow: hidden;
+    background: #fff;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+/* Colored accent stripe at top — uses inline style for ticket color */
+.qp-accent {
+    height: 6px;
+    width: 100%;
+    background: #8b5cf6; /* overridden by inline style */
+}
+
+.qp-body {
+    padding: 14px 14px 12px;
+}
+
+.qp-event {
+    font-size: 8.5px;
+    color: #bbb;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.qp-type {
+    font-size: 17px;
+    font-weight: 700;
+    color: #111;
+    font-family: Arial, Helvetica, sans-serif;
+    margin-bottom: 2px;
+    line-height: 1.2;
+}
+
+.qp-buyer {
+    font-size: 11px;
+    color: #555;
+    font-family: Arial, Helvetica, sans-serif;
+    margin-bottom: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.qp-divider {
+    border: none;
+    border-top: 1px dashed #e0e0e0;
+    margin: 11px 0;
+}
+
+.qp-qr {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 10px;
+}
+
+/* Force QR canvas/img to correct size */
+.qp-qr canvas,
+.qp-qr img {
+    width: 150px !important;
+    height: 150px !important;
+}
+
+.qp-code {
+    font-family: 'Courier New', monospace;
+    font-size: 8px;
+    letter-spacing: 1px;
+    color: #555;
+    word-break: break-all;
+    text-align: center;
+    background: #f7f7f7;
+    border-radius: 4px;
+    padding: 5px 6px;
+    margin-bottom: 7px;
+    border: 1px solid #eee;
+}
+
+.qp-note {
+    font-size: 8px;
+    color: #ccc;
+    text-align: center;
+    font-family: Arial, Helvetica, sans-serif;
+    padding-bottom: 2px;
+}
+
+.qr-print-footer {
+    text-align: center;
+    margin-top: 32px;
+    padding-top: 16px;
+    border-top: 1px solid #eee;
+    font-size: 9px;
+    color: #ccc;
+    font-family: Arial, Helvetica, sans-serif;
+    letter-spacing: 0.5px;
+}
+
+/* =====================================================================
+   @media print — isolate ONLY the QR frame, hide everything else
+   Works in Chrome, Firefox, Safari, Edge
+   ===================================================================== */
 @media print {
-    body.printing-qr * { visibility: hidden; }
-    body.printing-qr #qr-print-frame,
-    body.printing-qr #qr-print-frame * { visibility: visible; }
-    body.printing-qr #qr-print-frame {
+    /* Force white page */
+    html, body {
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+
+    /* Hide literally everything on the page */
+    body > *:not(#qr-print-frame) {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    /* Show and position the print frame to fill the page */
+    #qr-print-frame {
         display: block !important;
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        background: #fff;
+        visibility: visible !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
+        min-height: 100vh !important;
+        background: #fff !important;
+        z-index: 99999 !important;
     }
-    body.printing-qr .qr-print-card {
-        page-break-inside: avoid;
-        break-inside: avoid;
+
+    /* Make sure all descendants of the frame are visible */
+    #qr-print-frame * {
+        visibility: visible !important;
     }
-    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+    /* Prevent cards from splitting across pages */
+    .qr-print-card {
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+    }
+    .qr-print-header {
+        page-break-after: avoid;
+    }
 }
